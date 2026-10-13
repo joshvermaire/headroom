@@ -335,8 +335,10 @@ final class AppModel {
             reveal(category)
             return
         }
-        pending = PendingClean(categoryID: category.id, previewText: nil, loadingPreview: category.preview != nil)
-        guard let preview = category.preview else { return }
+        // Demo mode skips the preview: it would list real containers or simulators.
+        let preview = isDemo ? nil : category.preview
+        pending = PendingClean(categoryID: category.id, previewText: nil, loadingPreview: preview != nil)
+        guard let preview else { return }
         Task {
             let text = await Self.runPreview(preview)
             if pending?.categoryID == category.id {
