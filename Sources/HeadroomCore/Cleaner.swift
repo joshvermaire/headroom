@@ -113,9 +113,8 @@ public enum Cleaner {
     /// through a symlink. Such categories are shown, but only revealed in Finder.
     public static func isLinkedElsewhere(_ category: StorageCategory, home: String = NSHomeDirectory()) -> Bool {
         guard case .deleteContents(let paths) = category.action else { return false }
-        return paths.contains { path in
-            let expanded = Paths.expand(path, home: home)
-            return FileManager.default.fileExists(atPath: expanded) && passesThroughSymlink(expanded, below: home)
-        }
+        // No existence check: fileExists follows links, so a link to an unmounted drive
+        // would look absent. passesThroughSymlink already treats missing parts as fine.
+        return paths.contains { passesThroughSymlink(Paths.expand($0, home: home), below: home) }
     }
 }

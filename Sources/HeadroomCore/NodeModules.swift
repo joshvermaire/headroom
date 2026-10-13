@@ -83,8 +83,10 @@ public enum NodeModules {
                 dates += gitMarkers.compactMap { modified((gitDir as NSString).appendingPathComponent($0)) }
                 break
             }
-            if dir == "/" { break }
-            dir = (dir as NSString).deletingLastPathComponent
+            // Stop below home: a dotfiles repo at ~/.git says nothing about these projects.
+            let parent = (dir as NSString).deletingLastPathComponent
+            if dir == "/" || parent == NSHomeDirectory() { break }
+            dir = parent
         }
         // No markers at all: fall back to the project folder itself.
         return dates.max() ?? modified(project) ?? .distantPast
