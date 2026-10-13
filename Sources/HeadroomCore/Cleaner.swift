@@ -49,7 +49,7 @@ public enum Cleaner {
 
     /// True if `path` or any ancestor strictly below `root` is a symlink. Missing components
     /// count as fine; there's nothing to delete there anyway.
-    static func passesThroughSymlink(_ path: String, below root: String) -> Bool {
+    public static func passesThroughSymlink(_ path: String, below root: String) -> Bool {
         let rootComponents = (root as NSString).standardizingPath.split(separator: "/")
         let components = (path as NSString).standardizingPath.split(separator: "/")
         guard components.starts(with: rootComponents), components.count > rootComponents.count else { return true }
@@ -80,9 +80,13 @@ public enum Cleaner {
     static func deleteContents(of directories: [String], allowed: Set<String>, trustedRoot: String) throws {
         let fm = FileManager.default
         var failures: [String] = []
+        var symlinked: [String] = []
         for dir in directories {
             guard allowed.contains(dir) else { throw CleanError.notAllowed(dir) }
-            guard !passesThroughSymlink(dir, below: trustedRoot) else { throw CleanError.symlinked(dir) }
+            guard !passesThroughSymlink(dir, below: trustedRoot) else {
+                symlinked.append(dir)
+                continue
+            }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { continue }
             let children: [String]
@@ -101,6 +105,17 @@ public enum Cleaner {
                 }
             }
         }
-        if !failures.isEmpty { throw CleanError.partial(failures: failures) }
+        if !failures.isEmpty { throw CleanError.partial(failures: symlinked + failures) }
+        if let first = symlinked.first { throw CleanError.symlinked(first) }
+    }
+
+    /// Whether a delete-contents category can't be cleaned because its folder is reached
+    /// through a symlink. Such categories are shown, but only revealed in Finder.
+    public static func isLinkedElsewhere(_ category: StorageCategory, home: String = NSHomeDirectory()) -> Bool {
+        guard case .deleteContents(let paths) = category.action else { return false }
+        return paths.contains { path in
+            let expanded = Paths.expand(path, home: home)
+            return FileManager.default.fileExists(atPath: expanded) && passesThroughSymlink(expanded, below: home)
+        }
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import HeadroomCore
 import SwiftUI
 
@@ -24,7 +25,12 @@ struct PanelView: View {
         .frame(width: 340)
         .animation(.snappy(duration: 0.2), value: page)
         // A confirmation shouldn't still be waiting days later when the panel reopens.
+        // MenuBarExtra windows don't reliably report onDisappear, so also watch for the
+        // panel losing focus, which is what closing it does.
         .onDisappear { model.pending = nil }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            model.pending = nil
+        }
     }
 }
 
@@ -182,8 +188,9 @@ struct SafeSection: View {
 
     var body: some View {
         let rows = model.rows(.safe)
+        let cleanable = model.cleanableSafeRows
         SectionHeader(title: "Safe to clear", subtitle: "Rebuilt or re-downloaded when needed") {
-            if rows.count > 1 {
+            if cleanable.count > 1 {
                 Button("Clean all…") {
                     model.pending = PendingClean(categoryID: allSafeID, previewText: nil, loadingPreview: false)
                 }
@@ -193,11 +200,11 @@ struct SafeSection: View {
         }
         if model.pending?.categoryID == allSafeID {
             ConfirmBox(
-                message: "Clears \(rows.map(\.category.name).joined(separator: ", ")).",
+                message: "Clears \(ListFormatter.localizedString(byJoining: cleanable.map(\.category.name))).",
                 preview: nil, loading: false,
                 actionTitle: "Clean all"
             ) {
-                model.confirmClean(rows.map(\.id))
+                model.confirmClean(cleanable.map(\.id))
             }
         }
         if rows.isEmpty {
@@ -287,6 +294,7 @@ struct CategoryRow: View {
     var body: some View {
         let category = row.category
         let busy = model.cleaning.contains(category.id)
+        let linked = Cleaner.isLinkedElsewhere(category)
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Button {
@@ -315,11 +323,16 @@ struct CategoryRow: View {
                         .controlSize(.small)
                         .frame(width: 52)
                         .help("Headroom needs Full Disk Access to measure this")
+                } else if linked {
+                    Button("Show") { model.reveal(category) }
+                        .controlSize(.small)
+                        .frame(width: 52)
+                        .help("This folder is a link to another location, so Headroom won't clean it")
                 } else {
                     Button(category.actionTitle) { model.requestClean(category) }
                         .controlSize(.small)
                         .frame(width: 52)
-                        .disabled(!model.canClean)
+                        .disabled(category.action.isDestructive && !model.canClean)
                 }
             }
             if expanded || model.pending?.categoryID == category.id {

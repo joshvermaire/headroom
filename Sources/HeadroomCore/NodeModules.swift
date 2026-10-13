@@ -63,8 +63,10 @@ public enum NodeModules {
     }
 
     /// Newest activity for a project, looking from the package folder up to its repository
-    /// root (or `root`), so a package inside a busy monorepo isn't called idle just because
-    /// its own package.json is old. Handles worktrees, where `.git` is a file.
+    /// root, so a package inside a busy monorepo isn't called idle just because its own
+    /// package.json is old. Package files count only inside `root`; the search for `.git`
+    /// continues above it, since a scan root can sit inside a repository. Handles worktrees,
+    /// where `.git` is a file.
     static func lastActive(project: String, root: String) -> Date {
         let fm = FileManager.default
         func modified(_ path: String) -> Date? {
@@ -74,12 +76,14 @@ public enum NodeModules {
         var dir = (project as NSString).standardizingPath
         let stop = (root as NSString).standardizingPath
         while true {
-            dates += activityMarkers.compactMap { modified((dir as NSString).appendingPathComponent($0)) }
+            if dir.hasPrefix(stop) {
+                dates += activityMarkers.compactMap { modified((dir as NSString).appendingPathComponent($0)) }
+            }
             if let gitDir = gitDirectory(in: dir) {
                 dates += gitMarkers.compactMap { modified((gitDir as NSString).appendingPathComponent($0)) }
                 break
             }
-            if dir == stop || dir == "/" || !dir.hasPrefix(stop) { break }
+            if dir == "/" { break }
             dir = (dir as NSString).deletingLastPathComponent
         }
         // No markers at all: fall back to the project folder itself.

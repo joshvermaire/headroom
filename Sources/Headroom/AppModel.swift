@@ -175,7 +175,8 @@ final class AppModel {
             .sorted { $0.measurement.bytes > $1.measurement.bytes }
     }
 
-    var safeTotal: Int64 { rows(.safe).reduce(0) { $0 + $1.measurement.bytes } }
+    /// Safe rows that "Clean all" will actually clean.
+    var cleanableSafeRows: [Row] { rows(.safe).filter { !Cleaner.isLinkedElsewhere($0.category) } }
 
     var staleNodeModules: [NodeModulesFolder] {
         nodeModules.filter { $0.isStale(now: Date(), after: staleAfterDays) }

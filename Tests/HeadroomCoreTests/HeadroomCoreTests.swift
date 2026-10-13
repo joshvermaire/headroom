@@ -175,6 +175,10 @@ struct FileSystemTests {
         let found = NodeModules.find(in: [root.path, repo.path])
         #expect(found.count == 1)  // overlapping roots don't duplicate
         #expect(!found[0].isStale(now: Date(), after: 30))
+        // A scan root inside the repository still finds the repository's activity.
+        let inner = NodeModules.find(in: [repo.appendingPathComponent("packages").path])
+        #expect(inner.count == 1)
+        #expect(!inner[0].isStale(now: Date(), after: 30))
     }
 
     @Test func worktreeGitFileIsFollowed() throws {
