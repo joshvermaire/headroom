@@ -2,6 +2,7 @@ import Foundation
 
 public enum CleanError: LocalizedError {
     case notAllowed(String)
+    case symlinked(String)
     case commandFailed(tool: String, output: String)
     case partial(failures: [String])
 
@@ -9,6 +10,8 @@ public enum CleanError: LocalizedError {
         switch self {
         case .notAllowed(let path):
             "Refused to delete \(path): it isn't a known cache folder."
+        case .symlinked(let path):
+            "Skipped \(path): it's a link to another location, so cleaning it could delete files elsewhere."
         case .commandFailed(let tool, let output):
             "\(tool) failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines).suffix(300))"
         case .partial(let failures):
@@ -29,7 +32,8 @@ public enum Cleaner {
             let result = try shell.run(tool: tool, arguments: arguments)
             guard result.succeeded else { throw CleanError.commandFailed(tool: tool, output: result.output) }
         case .deleteContents(let paths):
-            try deleteContents(of: paths.map { Paths.expand($0, home: home) }, allowed: allowedPaths(home: home))
+            try deleteContents(
+                of: paths.map { Paths.expand($0, home: home) }, allowed: allowedPaths(home: home), trustedRoot: home)
         }
     }
 
@@ -43,6 +47,22 @@ public enum Cleaner {
         try FileManager.default.removeItem(at: url)
     }
 
+    /// True if `path` or any ancestor strictly below `root` is a symlink. Missing components
+    /// count as fine; there's nothing to delete there anyway.
+    static func passesThroughSymlink(_ path: String, below root: String) -> Bool {
+        let rootComponents = (root as NSString).standardizingPath.split(separator: "/")
+        let components = (path as NSString).standardizingPath.split(separator: "/")
+        guard components.starts(with: rootComponents), components.count > rootComponents.count else { return true }
+        var current = "/" + rootComponents.joined(separator: "/")
+        for component in components.dropFirst(rootComponents.count) {
+            current += "/" + component
+            var info = stat()
+            guard lstat(current, &info) == 0 else { return false }
+            if (info.st_mode & S_IFMT) == S_IFLNK { return true }
+        }
+        return false
+    }
+
     static func allowedPaths(home: String) -> Set<String> {
         var allowed = Set<String>()
         for category in Catalog.all {
@@ -54,11 +74,15 @@ public enum Cleaner {
     }
 
     /// Removes every child of each directory. Symlinks inside are removed, never followed.
-    static func deleteContents(of directories: [String], allowed: Set<String>) throws {
+    ///
+    /// Refuses a directory if it, or any folder between it and `trustedRoot`, is a symlink:
+    /// a symlinked `~/.gradle` pointing at an external drive must not get that drive emptied.
+    static func deleteContents(of directories: [String], allowed: Set<String>, trustedRoot: String) throws {
         let fm = FileManager.default
         var failures: [String] = []
         for dir in directories {
             guard allowed.contains(dir) else { throw CleanError.notAllowed(dir) }
+            guard !passesThroughSymlink(dir, below: trustedRoot) else { throw CleanError.symlinked(dir) }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else { continue }
             let children: [String]

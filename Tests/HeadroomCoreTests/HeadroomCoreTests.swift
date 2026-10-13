@@ -158,17 +158,72 @@ struct FileSystemTests {
         #expect(found[0].isStale(now: Date().addingTimeInterval(31 * 86_400), after: 30))
     }
 
+    @Test func monorepoPackageUsesRepositoryActivity() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("repo")
+        let pkg = repo.appendingPathComponent("packages/web")
+        try FileManager.default.createDirectory(at: pkg.appendingPathComponent("node_modules"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        let old = Date().addingTimeInterval(-90 * 86_400)
+        let pkgJSON = pkg.appendingPathComponent("package.json")
+        try Data("{}".utf8).write(to: pkgJSON)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: pkgJSON.path)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: pkg.path)
+        try Data().write(to: repo.appendingPathComponent(".git/index"))  // committed just now
+
+        let found = NodeModules.find(in: [root.path, repo.path])
+        #expect(found.count == 1)  // overlapping roots don't duplicate
+        #expect(!found[0].isStale(now: Date(), after: 30))
+    }
+
+    @Test func worktreeGitFileIsFollowed() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gitDir = root.appendingPathComponent("main/.git/worktrees/feature")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        let tree = root.appendingPathComponent("feature")
+        try FileManager.default.createDirectory(at: tree, withIntermediateDirectories: true)
+        try Data("gitdir: \(gitDir.path)\n".utf8).write(to: tree.appendingPathComponent(".git"))
+        #expect(NodeModules.gitDirectory(in: tree.path) == gitDir.path)
+    }
+
     @Test func deleteContentsKeepsDirectoryAndRefusesUnknownPaths() throws {
         let root = try makeTree()
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = root.appendingPathComponent("cache")
         try FileManager.default.createDirectory(at: cache.appendingPathComponent("sub"), withIntermediateDirectories: true)
         try Data(count: 10).write(to: cache.appendingPathComponent("x"))
-        try Cleaner.deleteContents(of: [cache.path], allowed: [cache.path])
+        try Cleaner.deleteContents(of: [cache.path], allowed: [cache.path], trustedRoot: root.path)
         #expect(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
         #expect(throws: CleanError.self) {
-            try Cleaner.deleteContents(of: [root.path], allowed: [cache.path])
+            try Cleaner.deleteContents(of: [root.path], allowed: [cache.path], trustedRoot: root.path)
         }
+    }
+
+    @Test func refusesSymlinkedCacheOrAncestor() throws {
+        let root = try makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let elsewhere = root.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: elsewhere.appendingPathComponent("caches"), withIntermediateDirectories: true)
+        let precious = elsewhere.appendingPathComponent("caches/precious")
+        try Data(count: 10).write(to: precious)
+        let home = root.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        // ~/.gradle is a symlink to another location.
+        try FileManager.default.createSymbolicLink(at: home.appendingPathComponent(".gradle"), withDestinationURL: elsewhere)
+        let viaAncestor = home.appendingPathComponent(".gradle/caches").path
+        #expect(throws: CleanError.self) {
+            try Cleaner.deleteContents(of: [viaAncestor], allowed: [viaAncestor], trustedRoot: home.path)
+        }
+        // The cache folder itself is a symlink.
+        let direct = home.appendingPathComponent("cache").path
+        try FileManager.default.createSymbolicLink(atPath: direct, withDestinationPath: elsewhere.appendingPathComponent("caches").path)
+        #expect(throws: CleanError.self) {
+            try Cleaner.deleteContents(of: [direct], allowed: [direct], trustedRoot: home.path)
+        }
+        #expect(FileManager.default.fileExists(atPath: precious.path))
     }
 
     @Test func deleteNodeModulesOnlyDeletesNodeModules() throws {
@@ -197,5 +252,31 @@ struct ShellTests {
         #expect(result.succeeded)
         #expect(result.output == "hi\n")
         #expect(throws: ShellError.self) { try Shell.shared.run(tool: "definitely-not-a-tool-xyz", arguments: []) }
+    }
+}
+
+struct ShellRobustnessTests {
+    @Test func doesNotWaitForBackgroundChildrenHoldingThePipe() throws {
+        let start = Date()
+        let result = try Shell.run(
+            executable: "/bin/sh", arguments: ["-c", "sleep 5 & printf done"],
+            environment: ["PATH": "/usr/bin:/bin"], timeout: 10)
+        #expect(result.output == "done")
+        #expect(Date().timeIntervalSince(start) < 2.5)
+    }
+
+    @Test func killsCommandsThatIgnoreSIGTERM() throws {
+        let start = Date()
+        #expect(throws: ShellError.self) {
+            try Shell.run(
+                executable: "/bin/sh", arguments: ["-c", "trap '' TERM; sleep 10"],
+                environment: ["PATH": "/usr/bin:/bin"], timeout: 0.5)
+        }
+        #expect(Date().timeIntervalSince(start) < 4)
+    }
+
+    @Test func runsFromHomeDirectory() throws {
+        let result = try Shell.run(executable: "/bin/pwd", arguments: [], environment: [:], timeout: 5)
+        #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == NSHomeDirectory())
     }
 }

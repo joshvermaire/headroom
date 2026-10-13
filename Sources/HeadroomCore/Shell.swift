@@ -27,14 +27,23 @@ public final class Shell: @unchecked Sendable {
 
     private let lock = NSLock()
     private var cachedPath: String?
+    private var lastFailedLookup: Date?
 
+    /// The login shell's PATH. Resolved outside the lock so a slow ~/.zshrc can't block
+    /// other callers; a failed lookup falls back for now and is retried after a while.
     public var path: String {
-        lock.lock()
-        defer { lock.unlock() }
-        if let cachedPath { return cachedPath }
-        let resolved = Self.loginShellPath() ?? Self.fallbackPath
-        cachedPath = resolved
-        return resolved
+        let shouldResolve: Bool = lock.withLock {
+            if cachedPath != nil { return false }
+            if let failed = lastFailedLookup, Date().timeIntervalSince(failed) < 600 { return false }
+            return true
+        }
+        if shouldResolve {
+            let resolved = Self.loginShellPath()
+            lock.withLock {
+                if let resolved { cachedPath = resolved } else { lastFailedLookup = Date() }
+            }
+        }
+        return lock.withLock { cachedPath } ?? Self.fallbackPath
     }
 
     static let fallbackPath = [
@@ -80,29 +89,78 @@ public final class Shell: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.environment = environment
+        // Some tools (Yarn 2+) refuse to run from "/", which is where a GUI app starts.
+        process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
         process.standardInput = FileHandle.nullDevice
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-
-        // Drain the pipe as we go so a chatty tool can't fill it and block.
-        let buffer = OutputBuffer()
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            buffer.append(handle.availableData)
-        }
+        let reader = pipe.fileHandleForReading
 
         let done = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in done.signal() }
         try process.run()
-        if done.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            pipe.fileHandleForReading.readabilityHandler = nil
-            throw ShellError.timedOut((executable as NSString).lastPathComponent)
+        // Our copy of the write end must close, or reads never see EOF.
+        try? pipe.fileHandleForWriting.close()
+
+        // One thread owns the read end: it drains as output arrives (so a chatty tool can't
+        // fill the pipe and block) and stops at EOF or once told the process is gone.
+        let buffer = OutputBuffer()
+        let stop = StopFlag()
+        let drained = DispatchSemaphore(value: 0)
+        let fd = reader.fileDescriptor
+        Thread.detachNewThread {
+            drain(fd: fd, into: buffer, stop: stop)
+            drained.signal()
         }
-        pipe.fileHandleForReading.readabilityHandler = nil
-        buffer.append(pipe.fileHandleForReading.readDataToEndOfFile())
+
+        let timedOut = done.wait(timeout: .now() + timeout) == .timedOut
+        if timedOut {
+            // zsh -i ignores SIGTERM, so follow up with SIGKILL.
+            process.terminate()
+            if done.wait(timeout: .now() + 1) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = done.wait(timeout: .now() + 1)
+            }
+        }
+
+        // Don't wait for EOF: a background child the tool started may hold the pipe open
+        // indefinitely. Take what's already there, then close our end so such a child gets
+        // EPIPE instead of blocking on a full pipe.
+        stop.set()
+        drained.wait()
+        try? reader.close()
+
+        if timedOut { throw ShellError.timedOut((executable as NSString).lastPathComponent) }
         return CommandResult(status: process.terminationStatus, output: buffer.string)
     }
+}
+
+/// Reads `fd` until EOF, or until `stop` is set and nothing more is immediately readable.
+/// Gives up one second after `stop` regardless, in case a leftover child keeps writing.
+private func drain(fd: Int32, into buffer: OutputBuffer, stop: StopFlag) {
+    var chunk = [UInt8](repeating: 0, count: 65_536)
+    var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+    while true {
+        if let stoppedAt = stop.setAt, Date().timeIntervalSince(stoppedAt) > 1 { return }
+        let ready = poll(&pfd, 1, 100)
+        if ready > 0 {
+            let n = read(fd, &chunk, chunk.count)
+            if n <= 0 { return }
+            buffer.append(Data(chunk[0..<n]))
+        } else if ready == 0 {
+            if stop.setAt != nil { return }
+        } else if errno != EINTR {
+            return
+        }
+    }
+}
+
+private final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date?
+    func set() { lock.withLock { date = Date() } }
+    var setAt: Date? { lock.withLock { date } }
 }
 
 private final class OutputBuffer: @unchecked Sendable {

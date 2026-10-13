@@ -169,7 +169,7 @@ public enum Catalog {
             clearsEverything: true),
         StorageCategory(
             id: "homebrew", name: "Homebrew cache",
-            detail: "Old downloads and bottles. Installed packages are untouched.",
+            detail: "Downloads and outdated versions of installed packages. Current and pinned versions stay.",
             paths: ["~/Library/Caches/Homebrew"],
             safety: .safe, action: .command(tool: "brew", arguments: ["cleanup", "--prune=all"])),
         StorageCategory(

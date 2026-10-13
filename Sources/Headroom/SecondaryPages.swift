@@ -14,7 +14,6 @@ struct PageHeader: View {
                 Label("Back", systemImage: "chevron.left")
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut(.cancelAction)
             Spacer()
             Text(title).font(.headline)
             Spacer()
@@ -51,7 +50,7 @@ struct NodeModulesPage: View {
                         actionTitle: "Delete \(Format.bytes(stale.reduce(0) { $0 + $1.bytes }))"
                     ) {
                         confirmingAll = false
-                        model.deleteNodeModules(stale)
+                        model.deleteNodeModules(stale)  // also clears model.pending
                     }
                     .onChange(of: model.pending) { _, new in if new == nil { confirmingAll = false } }
                 } else {
@@ -61,7 +60,7 @@ struct NodeModulesPage: View {
                         model.pending = PendingClean(categoryID: "__node_modules__", previewText: nil, loadingPreview: false)
                     }
                     .controlSize(.small)
-                    .disabled(!model.cleaning.isEmpty)
+                    .disabled(!model.canClean)
                 }
             }
         }
@@ -112,7 +111,7 @@ struct NodeModulesPage: View {
                     }
                     .controlSize(.small)
                     .frame(width: 52)
-                    .disabled(!model.cleaning.isEmpty)
+                    .disabled(!model.canClean)
                 }
             }
             if confirmingPath == folder.path && model.pending?.categoryID == folder.path {
@@ -121,7 +120,6 @@ struct NodeModulesPage: View {
                     preview: nil, loading: false, actionTitle: "Delete \(Format.bytes(folder.bytes))"
                 ) {
                     confirmingPath = nil
-                    model.pending = nil
                     model.deleteNodeModules([folder])
                 }
             }

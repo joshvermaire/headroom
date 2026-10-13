@@ -26,14 +26,15 @@ public enum NodeModules {
     /// Files whose modification time means someone worked on the project. A directory's own
     /// mtime isn't used: it changes when anything inside is added or removed, including by tools.
     static let activityMarkers = [
-        ".git/index", ".git/HEAD", ".git/FETCH_HEAD",
         "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb",
     ]
+    static let gitMarkers = ["index", "HEAD", "FETCH_HEAD", "logs/HEAD"]
 
     /// Finds top-level `node_modules` folders under `roots`, without descending into them
     /// or into hidden directories. Sizes are left at zero; measure the ones you show.
     public static func find(in roots: [String], maxDepth: Int = 5) -> [NodeModulesFolder] {
         var found: [NodeModulesFolder] = []
+        var seen = Set<String>()
         let fm = FileManager.default
         for root in roots {
             let rootURL = URL(fileURLWithPath: root).standardizedFileURL
@@ -47,10 +48,12 @@ public enum NodeModules {
                 guard values?.isDirectory == true, values?.isSymbolicLink != true else { continue }
                 if url.lastPathComponent == "node_modules" {
                     enumerator.skipDescendants()
+                    // Overlapping roots (~/github and ~/github/acme) would find it twice.
+                    guard seen.insert(url.standardizedFileURL.path).inserted else { continue }
                     let project = url.deletingLastPathComponent()
                     found.append(NodeModulesFolder(
                         path: url.path, projectName: project.lastPathComponent,
-                        lastActive: lastActive(project: project.path), bytes: 0))
+                        lastActive: lastActive(project: project.path, root: rootURL.path), bytes: 0))
                 } else if url.pathComponents.count - rootDepth >= maxDepth {
                     enumerator.skipDescendants()
                 }
@@ -59,15 +62,40 @@ public enum NodeModules {
         return found
     }
 
-    static func lastActive(project: String) -> Date {
+    /// Newest activity for a project, looking from the package folder up to its repository
+    /// root (or `root`), so a package inside a busy monorepo isn't called idle just because
+    /// its own package.json is old. Handles worktrees, where `.git` is a file.
+    static func lastActive(project: String, root: String) -> Date {
         let fm = FileManager.default
-        let dates = activityMarkers.compactMap { marker -> Date? in
-            let attrs = try? fm.attributesOfItem(atPath: (project as NSString).appendingPathComponent(marker))
-            return attrs?[.modificationDate] as? Date
+        func modified(_ path: String) -> Date? {
+            (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        }
+        var dates: [Date] = []
+        var dir = (project as NSString).standardizingPath
+        let stop = (root as NSString).standardizingPath
+        while true {
+            dates += activityMarkers.compactMap { modified((dir as NSString).appendingPathComponent($0)) }
+            if let gitDir = gitDirectory(in: dir) {
+                dates += gitMarkers.compactMap { modified((gitDir as NSString).appendingPathComponent($0)) }
+                break
+            }
+            if dir == stop || dir == "/" || !dir.hasPrefix(stop) { break }
+            dir = (dir as NSString).deletingLastPathComponent
         }
         // No markers at all: fall back to the project folder itself.
-        return dates.max()
-            ?? ((try? fm.attributesOfItem(atPath: project))?[.modificationDate] as? Date)
-            ?? .distantPast
+        return dates.max() ?? modified(project) ?? .distantPast
+    }
+
+    /// The git directory for a working tree: `.git` itself, or where a worktree's `.git` file points.
+    static func gitDirectory(in dir: String) -> String? {
+        let dotGit = (dir as NSString).appendingPathComponent(".git")
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDir) else { return nil }
+        if isDir.boolValue { return dotGit }
+        guard let contents = try? String(contentsOfFile: dotGit, encoding: .utf8),
+              let line = contents.split(separator: "\n").first(where: { $0.hasPrefix("gitdir:") })
+        else { return nil }
+        let target = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+        return target.hasPrefix("/") ? target : (dir as NSString).appendingPathComponent(target)
     }
 }

@@ -23,6 +23,8 @@ struct PanelView: View {
         }
         .frame(width: 340)
         .animation(.snappy(duration: 0.2), value: page)
+        // A confirmation shouldn't still be waiting days later when the panel reopens.
+        .onDisappear { model.pending = nil }
     }
 }
 
@@ -186,7 +188,7 @@ struct SafeSection: View {
                     model.pending = PendingClean(categoryID: allSafeID, previewText: nil, loadingPreview: false)
                 }
                 .controlSize(.small)
-                .disabled(!model.cleaning.isEmpty)
+                .disabled(!model.canClean)
             }
         }
         if model.pending?.categoryID == allSafeID {
@@ -317,7 +319,7 @@ struct CategoryRow: View {
                     Button(category.actionTitle) { model.requestClean(category) }
                         .controlSize(.small)
                         .frame(width: 52)
-                        .disabled(!model.cleaning.isEmpty)
+                        .disabled(!model.canClean)
                 }
             }
             if expanded || model.pending?.categoryID == category.id {
@@ -388,9 +390,9 @@ struct ConfirmBox: View {
                 Spacer()
                 Button("Cancel") { model.pending = nil }
                     .keyboardShortcut(.cancelAction)
+                // No Return shortcut: destructive actions take a deliberate click.
                 Button(actionTitle, role: .destructive, action: onConfirm)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(loading)
+                    .disabled(loading || !model.canClean)
             }
             .controlSize(.small)
         }

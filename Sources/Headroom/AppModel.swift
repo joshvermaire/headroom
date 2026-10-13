@@ -77,6 +77,7 @@ final class AppModel {
     var lastResult: String?
     var lastError: String?
 
+    private var clearResultTask: Task<Void, Never>?
     private let defaults = UserDefaults.standard
     private let store = HistoryStore.standard
     private var alert: LowSpaceAlert
@@ -109,7 +110,10 @@ final class AppModel {
         }
         if let last = history.scans.last {
             lastScan = last.date
-            measurements = last.sizes.mapValues { SizeReading(bytes: $0, complete: true, missing: false) }
+            let allowed = Set(measurable(Catalog.all).map(\.id))
+            measurements = last.sizes
+                .filter { allowed.contains($0.key) }
+                .mapValues { SizeReading(bytes: $0, complete: true, missing: false) }
         }
     }
 
@@ -202,10 +206,11 @@ final class AppModel {
     }
 
     private func evaluateAlert() {
-        guard let volume else { return }
+        // With alerts off, leave the alert state alone so turning them on still fires.
+        guard alertsEnabled, canNotify, let volume else { return }
         let fire = alert.evaluate(available: volume.available, threshold: alertThreshold, now: Date())
         defaults.set(try? JSONEncoder().encode(alert), forKey: "lowSpaceAlert")
-        guard fire, alertsEnabled else { return }
+        guard fire else { return }
         let content = UNMutableNotificationContent()
         content.title = "\(Format.bytes(volume.available)) available"
         let top = rows(.safe).first.map { " \($0.category.name) alone is \(Format.bytes($0.measurement.bytes))." } ?? ""
@@ -214,14 +219,20 @@ final class AppModel {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// UNUserNotificationCenter traps outside an app bundle (e.g. `swift run`).
+    private var canNotify: Bool { Bundle.main.bundleIdentifier != nil }
+
     private func requestNotificationPermission() {
+        guard canNotify else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     // MARK: Scanning
 
+    /// Scans and cleans never overlap: a scan that started before a clean would otherwise
+    /// finish with pre-clean sizes, resurrect deleted folders, and skew growth history.
     func scan() {
-        guard !scanning else { return }
+        guard !scanning, cleaning.isEmpty else { return }
         scanning = true
         hasFullDiskAccess = FullDiskAccess.isGranted
         let categories = measurable(Catalog.all)
@@ -240,6 +251,7 @@ final class AppModel {
         nodeModules = found.sorted { $0.bytes > $1.bytes }
         lastScan = now
         scanning = false
+        pending = nil
         // Only complete, existing measurements go into history, so growth compares like with like.
         let comparable = results.filter { $0.value.complete && !$0.value.missing }.mapValues(\.bytes)
         growth = history.categoryGrowth(over: 86_400, now: now, current: comparable)
@@ -297,6 +309,8 @@ final class AppModel {
 
     // MARK: Cleaning
 
+    var canClean: Bool { !scanning && cleaning.isEmpty }
+
     func requestClean(_ category: StorageCategory) {
         lastError = nil
         guard category.action.isDestructive else {
@@ -341,7 +355,9 @@ final class AppModel {
     func confirmClean(_ ids: [String]) {
         pending = nil
         lastError = nil
-        let categories = Catalog.all.filter { ids.contains($0.id) && $0.action.isDestructive }
+        guard canClean else { return }
+        hasFullDiskAccess = FullDiskAccess.isGranted
+        let categories = measurable(Catalog.all.filter { ids.contains($0.id) && $0.action.isDestructive })
         guard !categories.isEmpty else { return }
         cleaning.formUnion(categories.map(\.id))
         let before = (try? VolumeStatus.current())?.available
@@ -371,7 +387,9 @@ final class AppModel {
     }
 
     func deleteNodeModules(_ folders: [NodeModulesFolder]) {
+        pending = nil
         lastError = nil
+        guard canClean else { return }
         let paths = folders.map(\.path)
         cleaning.formUnion(paths)
         let before = (try? VolumeStatus.current())?.available
@@ -398,9 +416,10 @@ final class AppModel {
         guard let before, let after = volume?.available else { return }
         let freed = after - before
         lastResult = freed > 50_000_000 ? "Freed \(Format.bytes(freed))" : "Done. macOS may take a minute to report the space."
-        Task {
+        clearResultTask?.cancel()
+        clearResultTask = Task {
             try? await Task.sleep(for: .seconds(8))
-            lastResult = nil
+            if !Task.isCancelled { lastResult = nil }
         }
     }
 
