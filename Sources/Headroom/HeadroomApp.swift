@@ -7,7 +7,7 @@ struct HeadroomApp: App {
     @State private var model: AppModel
 
     init() {
-        let model = AppModel()
+        let model = AppModel(demo: CommandLine.arguments.contains("--demo"))
         model.start()
         _model = State(initialValue: model)
         if CommandLine.arguments.contains("--debug-window") || CommandLine.arguments.contains("--debug-snapshot") {
@@ -72,8 +72,9 @@ enum CapacityGlyph {
 /// Debugging aids that don't need screen-recording permission:
 ///
 ///   Headroom --debug-window                      also show the panel in a normal window
-///   Headroom --debug-snapshot out.png [--page settings|nodeModules]
+///   Headroom --debug-snapshot out.png [--page settings|nodeModules] [--appearance light|dark]
 ///                                                render the panel to a PNG after the first scan, then quit
+///   Headroom --demo ...                          show made-up data instead of scanning (for screenshots)
 @MainActor
 enum DebugWindow {
     static var window: NSWindow?
@@ -88,6 +89,8 @@ enum DebugWindow {
         let host = NSHostingView(rootView: PanelView(page: page)
             .environment(model)
             .background(Color(nsColor: .windowBackgroundColor)))
+        // The real panel has no title bar, so don't inset for this window's.
+        host.safeAreaRegions = []
         host.frame.size = host.fittingSize
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: host.fittingSize),
@@ -95,6 +98,11 @@ enum DebugWindow {
         window.titlebarAppearsTransparent = true
         window.title = "Headroom"
         window.contentView = host
+        switch args.value(after: "--appearance") {
+        case "light": window.appearance = NSAppearance(named: .aqua)
+        case "dark": window.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)

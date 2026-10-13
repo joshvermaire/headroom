@@ -2,6 +2,20 @@
 
 A macOS menu bar app that shows how much disk space you have left, and what's eating it if you're a developer.
 
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/panel-dark.png">
+    <img src="docs/screenshots/panel-light.png" width="340" alt="Headroom's panel: 96 GB available with a 7-day trend line, cache sizes with their growth since yesterday, and Clean buttons">
+  </picture>
+  &nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/node-modules-dark.png">
+    <img src="docs/screenshots/node-modules-light.png" width="340" alt="The node_modules page: projects by size, with idle ones marked in orange">
+  </picture>
+</p>
+
+<sub>Screenshots use made-up data (`--demo`).</sub>
+
 The menu bar shows a small capacity glyph and the percent available. Click it for:
 
 - **Available space** as Finder counts it (including space macOS can purge on its own), with a 7-day trend line, the change over the last 24 hours, and your low-space alert threshold.
@@ -34,7 +48,7 @@ Every destructive action asks for confirmation inline first. Where a tool has it
 | npm, Bun, Yarn, uv, pip, Go | the tool's own "clear cache" command |
 | pnpm | `pnpm store prune` (keeps packages still in use) |
 | Homebrew | `brew cleanup --prune=all` |
-| Docker | `docker system prune --force` (lists the stopped containers it will delete first; volumes are kept) |
+| Docker | `docker --context desktop-linux system prune --force` (lists the stopped containers it will delete first; volumes are kept; always Docker Desktop's local engine, never a remote context) |
 | iOS Simulators | `xcrun simctl delete unavailable` (lists them first) |
 | DerivedData, device support, simulator caches, Gradle, Cargo, CocoaPods, Trash | deletes the folder's contents |
 | `node_modules` | deletes the folder, per project or all idle ones |
@@ -58,6 +72,10 @@ build/Headroom.app/Contents/MacOS/Headroom --debug-window
 build/Headroom.app/Contents/MacOS/Headroom --debug-snapshot out.png [--page settings|nodeModules]
 ```
 
-`--debug-snapshot` renders the panel to a PNG after the first scan and quits, which is handy for checking UI changes without clicking the menu bar.
+`--debug-snapshot` renders the panel to a PNG after the first scan and quits, which is handy for checking UI changes without clicking the menu bar. Add `--appearance light|dark` to pick a theme, and `--demo` to show made-up data instead of scanning; demo mode never cleans, saves history, or touches your real settings. `scripts/screenshots.sh` regenerates the README screenshots that way.
 
 Layout: `HeadroomCore` holds everything testable (catalog, measuring, history, alert logic, cleaning, shell). `Headroom` is the SwiftUI app.
+
+## Status
+
+A personal project, shared as is and maintained as time allows. There are no prebuilt or notarized downloads; build it yourself with the script above. Cleaning deletes files, so read the confirmation before you click. See [LICENSE](LICENSE) (MIT).

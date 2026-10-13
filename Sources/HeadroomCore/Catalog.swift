@@ -183,11 +183,14 @@ public enum Catalog {
             id: "docker", name: "Docker",
             detail: "Docker Desktop's disk image. Prune removes stopped containers, unused networks, dangling images, and build cache. Volumes are kept.",
             paths: ["~/Library/Containers/com.docker.docker/Data/vms"],
-            safety: .review, action: .command(tool: "docker", arguments: ["system", "prune", "--force"]),
+            // Pinned to Docker Desktop's context: the active one could point at a remote host,
+            // and the size shown is Docker Desktop's local disk image.
+            safety: .review,
+            action: .command(tool: "docker", arguments: ["--context", "desktop-linux", "system", "prune", "--force"]),
             actionTitle: "Prune",
             preview: CleanPreview(
                 tool: "docker",
-                arguments: ["ps", "--all", "--filter", "status=exited", "--filter", "status=created", "--format", "{{.Names}}  ({{.Image}})"],
+                arguments: ["--context", "desktop-linux", "ps", "--all", "--filter", "status=exited", "--filter", "status=created", "--format", "{{.Names}}  ({{.Image}})"],
                 heading: "Stopped containers that will be deleted:"),
             requiresFullDiskAccess: true),
         StorageCategory(

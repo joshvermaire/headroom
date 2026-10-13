@@ -38,7 +38,7 @@ struct NodeModulesPage: View {
         PageHeader(title: "node_modules", page: $page)
         Divider()
         VStack(alignment: .leading, spacing: 6) {
-            Text("Deleting node_modules is safe: run your package manager's install to get it back. Idle means no commits, checkouts, or lockfile changes for \(model.staleAfterDays) days.")
+            Text("Your package manager's install brings node_modules back, minus any files you edited in it by hand. Idle means no commits, checkouts, or lockfile changes for \(model.staleAfterDays) days.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -48,8 +48,9 @@ final class AppModel {
         didSet { defaults.set(staleAfterDays, forKey: "staleAfterDays") }
     }
     var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
+        get { isDemo || SMAppService.mainApp.status == .enabled }
         set {
+            guard !isDemo else { return }
             do {
                 if newValue { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
@@ -77,8 +78,11 @@ final class AppModel {
     var lastResult: String?
     var lastError: String?
 
+    /// Showing made-up data for screenshots (`--demo`). Nothing is scanned, cleaned, or saved.
+    let isDemo: Bool
+
     private var clearResultTask: Task<Void, Never>?
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let store = HistoryStore.standard
     private var alert: LowSpaceAlert
     private var timers: [Timer] = []
@@ -88,7 +92,16 @@ final class AppModel {
     /// Rows smaller than this are hidden to keep the panel short.
     static let minimumShownBytes: Int64 = 100_000_000
 
-    init() {
+    init(demo: Bool = false) {
+        isDemo = demo
+        if demo {
+            // Settings changed in a demo window go to a throwaway domain, not the real one.
+            let suite = "com.joshvermaire.headroom.demo"
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+            defaults = UserDefaults(suiteName: suite)!
+        } else {
+            defaults = .standard
+        }
         defaults.register(defaults: [
             "menuBarStyle": MenuBarStyle.percent.rawValue,
             "alertThreshold": Int64(25_000_000_000),
@@ -101,14 +114,14 @@ final class AppModel {
         alertsEnabled = defaults.bool(forKey: "alertsEnabled")
         projectRoots = defaults.stringArray(forKey: "projectRoots") ?? ["~/github"]
         staleAfterDays = defaults.integer(forKey: "staleAfterDays")
-        history = store.load()
+        history = demo ? Demo.history(now: Date()) : store.load()
         if let data = defaults.data(forKey: "lowSpaceAlert"),
            let saved = try? JSONDecoder().decode(LowSpaceAlert.self, from: data) {
             alert = saved
         } else {
             alert = LowSpaceAlert()
         }
-        if let last = history.scans.last {
+        if !demo, let last = history.scans.last {
             lastScan = last.date
             let allowed = Set(measurable(Catalog.all).map(\.id))
             measurements = last.sizes
@@ -118,6 +131,10 @@ final class AppModel {
     }
 
     func start() {
+        if isDemo {
+            loadDemo()
+            return
+        }
         // A disk monitor is only useful if it's running, so opt in to Open at Login once.
         // Turning it off in Settings sticks. Dev builds run from ./build are left alone.
         let installed = Bundle.main.bundlePath.hasPrefix("/Applications/")
@@ -221,7 +238,7 @@ final class AppModel {
     }
 
     /// UNUserNotificationCenter traps outside an app bundle (e.g. `swift run`).
-    private var canNotify: Bool { Bundle.main.bundleIdentifier != nil }
+    private var canNotify: Bool { !isDemo && Bundle.main.bundleIdentifier != nil }
 
     private func requestNotificationPermission() {
         guard canNotify else { return }
@@ -233,7 +250,7 @@ final class AppModel {
     /// Scans and cleans never overlap: a scan that started before a clean would otherwise
     /// finish with pre-clean sizes, resurrect deleted folders, and skew growth history.
     func scan() {
-        guard !scanning, cleaning.isEmpty else { return }
+        guard !isDemo, !scanning, cleaning.isEmpty else { return }
         scanning = true
         hasFullDiskAccess = FullDiskAccess.isGranted
         let categories = measurable(Catalog.all)
@@ -356,7 +373,7 @@ final class AppModel {
     func confirmClean(_ ids: [String]) {
         pending = nil
         lastError = nil
-        guard canClean else { return }
+        guard !isDemo, canClean else { return }
         hasFullDiskAccess = FullDiskAccess.isGranted
         let categories = measurable(Catalog.all.filter { ids.contains($0.id) && $0.action.isDestructive })
         guard !categories.isEmpty else { return }
@@ -390,7 +407,7 @@ final class AppModel {
     func deleteNodeModules(_ folders: [NodeModulesFolder]) {
         pending = nil
         lastError = nil
-        guard canClean else { return }
+        guard !isDemo, canClean else { return }
         let paths = folders.map(\.path)
         cleaning.formUnion(paths)
         let before = (try? VolumeStatus.current())?.available
@@ -438,7 +455,18 @@ final class AppModel {
     }
 
     private func persist() {
+        guard !isDemo else { return }
         try? store.save(history)
+    }
+
+    private func loadDemo() {
+        let now = Date()
+        volume = Demo.volume
+        measurements = Demo.sizes.mapValues { SizeReading(bytes: $0.bytes, complete: true, missing: false) }
+        growth = (now.addingTimeInterval(-86_400), Demo.sizes.mapValues(\.growth))
+        nodeModules = Demo.nodeModules(now: now).sorted { $0.bytes > $1.bytes }
+        hasFullDiskAccess = true
+        lastScan = now.addingTimeInterval(-4 * 60)
     }
 }
 
